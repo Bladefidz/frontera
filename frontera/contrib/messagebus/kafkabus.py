@@ -18,6 +18,7 @@ from msgpack import Packer, unpackb
 from collections import defaultdict
 from math import ceil
 from cachetools import LRUCache
+import hashlib
 
 
 DEFAULT_BATCH_SIZE = 1024 * 1024
@@ -45,33 +46,35 @@ class FramedTransport(object):
         self.packer = Packer()
 
     def read(self, kafka_msg):
-        kafka_key = kafka_msg.key
         frame = unpackb(kafka_msg.value)
-        seg_id, seg_count, msg = frame
+        seg_id, seg_count, msg_key, msg = frame
         if seg_count == 1:
             return msg
 
-        buffer = self.buffer.get(kafka_key, dict())
+        buffer = self.buffer.get(msg_key, dict())
         if not buffer:
-            self.buffer[kafka_key] = buffer
+            self.buffer[msg_key] = buffer
         buffer[seg_id] = frame
         if len(buffer) == seg_count:
-            msgs = [buffer[seg_id][2] for seg_id in sorted(buffer.keys())]
+            msgs = [buffer[seg_id][3] for seg_id in sorted(buffer.keys())]
             final_msg = b''.join(msgs)
-            del self.buffer[kafka_key]
+            del self.buffer[msg_key]
             return final_msg
         return None
 
     def write(self, key, msg):
         if len(msg) < self.max_message_size:
-            yield self.packer.pack((1, 1, msg))
+            yield self.packer.pack((1, 1, None, msg))
         else:
             length = len(msg)
             seg_size = self.max_message_size
             seg_count = int(ceil(length / seg_size))
+            h = hashlib.sha1()
+            h.update(msg)
+            msg_key = h.digest()
             for seg_id in range(seg_count):
                 seg_msg = msg[seg_id * seg_size: (seg_id + 1) * seg_size]
-                yield self.packer.pack((seg_id, seg_count, seg_msg))
+                yield self.packer.pack((seg_id, seg_count, msg_key, seg_msg))
 
 
 class Consumer(BaseStreamConsumer):
