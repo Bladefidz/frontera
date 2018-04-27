@@ -15,7 +15,6 @@ from twisted.internet.task import LoopingCall
 from traceback import format_tb
 from os.path import join as os_path_join
 from msgpack import Packer, unpackb
-from collections import defaultdict
 from math import ceil
 from cachetools import LRUCache
 import hashlib
@@ -68,7 +67,7 @@ class FramedTransport(object):
         else:
             length = len(msg)
             seg_size = self.max_message_size
-            seg_count = int(ceil(length / seg_size))
+            seg_count = int(ceil(length / float(seg_size)))
             h = hashlib.sha1()
             h.update(msg)
             msg_key = h.digest()
