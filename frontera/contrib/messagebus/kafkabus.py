@@ -56,9 +56,10 @@ class FramedTransport(object):
             self.buffer[kafka_key] = buffer
         buffer[seg_id] = frame
         if len(buffer) == seg_count:
-            msg = b''.join([frame[2] for frame in buffer.values()])
+            msgs = [buffer[seg_id][2] for seg_id in sorted(buffer.keys())]
+            final_msg = b''.join(msgs)
             del self.buffer[kafka_key]
-            return msg
+            return final_msg
         return None
 
     def write(self, key, msg):
