@@ -14,11 +14,16 @@ from frontera.core.messagebus import BaseMessageBus, BaseSpiderLogStream, BaseSp
 from twisted.internet.task import LoopingCall
 from traceback import format_tb
 from os.path import join as os_path_join
+from msgpack import Packer, unpackb
+from collections import defaultdict
+from math import ceil
+from cachetools import LRUCache
 
 
 DEFAULT_BATCH_SIZE = 1024 * 1024
 DEFAULT_BUFFER_MEMORY = 130 * 1024 * 1024
 DEFAULT_MAX_REQUEST_SIZE = 4 * 1024 * 1024
+MAX_SEGMENT_SIZE = int(DEFAULT_MAX_REQUEST_SIZE * 0.95)
 
 logger = getLogger("messagebus.kafka")
 
@@ -31,6 +36,41 @@ def _prepare_kafka_ssl_kwargs(cert_path):
         'ssl_certfile': os_path_join(cert_path, 'client-cert.pem'),
         'ssl_keyfile': os_path_join(cert_path, 'client-key.pem')
     }
+
+
+class FramedTransport(object):
+    def __init__(self, max_message_size):
+        self.max_message_size = max_message_size
+        self.buffer = LRUCache(10)
+        self.packer = Packer()
+
+    def read(self, kafka_msg):
+        kafka_key = kafka_msg.key
+        frame = unpackb(kafka_msg.value)
+        seg_id, seg_count, msg = frame
+        if seg_count == 1:
+            return msg
+
+        buffer = self.buffer.get(kafka_key, dict())
+        if not buffer:
+            self.buffer[kafka_key] = buffer
+        buffer[seg_id] = frame
+        if len(buffer) == seg_count:
+            msg = b''.join([frame[2] for frame in buffer.values()])
+            del self.buffer[kafka_key]
+            return msg
+        return None
+
+    def write(self, key, msg):
+        if len(msg) < self.max_message_size:
+            yield self.packer.pack((1, 1, msg))
+        else:
+            length = len(msg)
+            seg_size = self.max_message_size
+            seg_count = ceil(length / seg_size)
+            for seg_id in range(seg_count):
+                seg_msg = msg[seg_id * seg_size: (seg_id + 1) * seg_size]
+                yield self.packer.pack((seg_id, seg_count, seg_msg))
 
 
 class Consumer(BaseStreamConsumer):
@@ -59,13 +99,16 @@ class Consumer(BaseStreamConsumer):
         else:
             self._partitions = [TopicPartition(self._topic, pid) for pid in self._consumer.partitions_for_topic(self._topic)]
             self._consumer.subscribe(topics=[self._topic])
+        self._transport = FramedTransport(MAX_SEGMENT_SIZE)
 
     def get_messages(self, timeout=0.1, count=1):
         result = []
         while count > 0:
             try:
-                m = next(self._consumer)
-                result.append(m.value)
+                kafka_msg = next(self._consumer)
+                msg = self._transport.read(kafka_msg)
+                if msg is not None:
+                    result.append(msg)
                 count -= 1
             except StopIteration:
                 break
@@ -89,18 +132,21 @@ class SimpleProducer(BaseStreamProducer):
         self._compression = compression
         self._create(enable_ssl, cert_path, **kwargs)
 
+
     def _create(self, enable_ssl, cert_path, **kwargs):
-        max_request_size = kwargs.pop('max_request_size', DEFAULT_MAX_REQUEST_SIZE)
+        self._transport = FramedTransport(MAX_SEGMENT_SIZE)
         kwargs.update(_prepare_kafka_ssl_kwargs(cert_path) if enable_ssl else {})
         self._producer = KafkaProducer(bootstrap_servers=self._location,
                                        retries=5,
                                        compression_type=self._compression,
-                                       max_request_size=max_request_size,
+                                       max_request_size=DEFAULT_MAX_REQUEST_SIZE,
                                        **kwargs)
+
 
     def send(self, key, *messages):
         for msg in messages:
-            self._producer.send(self._topic, value=msg)
+            for kafka_msg in self._transport.write(key, msg):
+                self._producer.send(self._topic, value=kafka_msg)
 
     def flush(self):
         self._producer.flush()
@@ -115,18 +161,19 @@ class KeyedProducer(BaseStreamProducer):
         self._topic_done = topic_done
         self._partitioner = partitioner
         self._compression = compression
-        max_request_size = kwargs.pop('max_request_size', DEFAULT_MAX_REQUEST_SIZE)
         kwargs.update(_prepare_kafka_ssl_kwargs(cert_path) if enable_ssl else {})
+        self._transport = FramedTransport(MAX_SEGMENT_SIZE)
         self._producer = KafkaProducer(bootstrap_servers=self._location,
                                        partitioner=partitioner,
                                        retries=5,
                                        compression_type=self._compression,
-                                       max_request_size=max_request_size,
+                                       max_request_size=DEFAULT_MAX_REQUEST_SIZE,
                                        **kwargs)
 
     def send(self, key, *messages):
         for msg in messages:
-            self._producer.send(self._topic_done, key=key, value=msg)
+            for kafka_msg in self._transport.write(key, msg):
+                self._producer.send(self._topic_done, key=key, value=kafka_msg)
 
     def flush(self):
         self._producer.flush()
