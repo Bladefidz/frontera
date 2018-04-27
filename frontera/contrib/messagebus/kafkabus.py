@@ -67,7 +67,7 @@ class FramedTransport(object):
         else:
             length = len(msg)
             seg_size = self.max_message_size
-            seg_count = ceil(length / seg_size)
+            seg_count = int(ceil(length / seg_size))
             for seg_id in range(seg_count):
                 seg_msg = msg[seg_id * seg_size: (seg_id + 1) * seg_size]
                 yield self.packer.pack((seg_id, seg_count, seg_msg))
