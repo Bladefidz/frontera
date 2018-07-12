@@ -63,7 +63,7 @@ class FramedTransport(object):
 
     def write(self, key, msg):
         if len(msg) < self.max_message_size:
-            yield self.packer.pack((1, 1, None, msg))
+            yield self.packer.pack((0, 1, None, msg))
         else:
             length = len(msg)
             seg_size = self.max_message_size
