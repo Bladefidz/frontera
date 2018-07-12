@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from frontera.contrib.messagebus.kafkabus import FramedTransport
+from frontera.contrib.messagebus.kafka.transport import FramedTransport
 import random
 import string
 from collections import namedtuple
