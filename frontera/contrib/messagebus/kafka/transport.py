@@ -3,6 +3,13 @@ from math import ceil
 import hashlib
 from cachetools import LRUCache
 from msgpack import Packer, unpackb
+from random import randint
+from six import MAXSIZE
+from struct import pack
+
+
+def random_bytes():
+    return pack("L", randint(0, MAXSIZE))
 
 
 class FramedTransport(object):
@@ -37,6 +44,7 @@ class FramedTransport(object):
             seg_count = int(ceil(length / float(seg_size)))
             h = hashlib.sha1()
             h.update(msg)
+            h.update(random_bytes())
             msg_key = h.digest()
             for seg_id in range(seg_count):
                 seg_msg = msg[seg_id * seg_size: (seg_id + 1) * seg_size]
